@@ -1,10 +1,15 @@
+import anthropic
 import csv
 import io
-import random
+import json
+import os
 
 import pandas as pd
 import pdfplumber
 import streamlit as st
+from dotenv import load_dotenv
+
+load_dotenv()
 
 st.set_page_config(
     page_title="CV Shortlisting Tool",
@@ -22,7 +27,7 @@ div[data-testid="column"] > div { height: 100%; }
 </style>
 """, unsafe_allow_html=True)
 
-# ── Constants ────────────────────────────────────────────────────────────────
+# ── Constants ─────────────────────────────────────────────────────────────────
 
 DEFAULT_COMPETENCIES = ["Technical Competencies", "Relevance of Exp", "Leadership", "Overall Fit"]
 
@@ -50,208 +55,78 @@ TAG_STYLE = {
     "Inferred":  ("#f1f5f9", "#475569", "💡 Inferred"),
 }
 
-MOCK_CANDIDATES = [
-    {
-        "name": "Alice Tan",
-        "recommendation": "Shortlist",
-        "summary": "Exceptional all-round hire. Technically excellent, proven at senior level, and brings directly relevant fintech domain depth. No critical gaps — Kubernetes is the only notable miss and is learnable.",
-        "interview_focus": "Confirm Kubernetes upskilling plan; explore startup adaptability; validate C-suite communication style.",
-        "competencies": {
-            "Technical Competencies": {
-                "score": 95,
-                "strengths": [
-                    {"text": "Proficient in Python, SQL and Spark — all core stack requirements", "tag": "Evidenced", "req": "Core requirement: Python proficiency"},
-                    {"text": "AWS Solutions Architect (Pro) + GCP Data Engineer certified", "tag": "Exceeds", "req": "Cloud infrastructure (AWS/GCP)"},
-                    {"text": "Published NLP research directly applicable to AI platform roadmap", "tag": "Exceeds", "req": "Beyond JD scope — notable upside"},
-                ],
-                "gaps": [],
-            },
-            "Relevance of Exp": {
-                "score": 92,
-                "strengths": [
-                    {"text": "8 years total, 5 in senior IC/lead roles — exceeds the 5-year bar", "tag": "Evidenced", "req": "Minimum 5 years"},
-                    {"text": "Delivered 3 end-to-end platform migrations at 10M+ record scale", "tag": "Evidenced", "req": "Large-scale systems"},
-                    {"text": "Production ML models in fintech — directly sector-relevant", "tag": "Evidenced", "req": "Domain alignment"},
-                ],
-                "gaps": [
-                    {"text": "All experience at large corporates — startup-pace adaptability unproven", "severity": "Minor", "req": "Cultural fit"},
-                ],
-            },
-            "Leadership": {
-                "score": 88,
-                "strengths": [
-                    {"text": "Managed cross-functional team of 12 engineers across 2 time zones", "tag": "Evidenced", "req": "Team leadership"},
-                    {"text": "Drove end-to-end hiring and onboarding for 4 junior engineers", "tag": "Evidenced", "req": "People development"},
-                    {"text": "Presented technical roadmaps to C-suite quarterly", "tag": "Evidenced", "req": "Executive stakeholder management"},
-                ],
-                "gaps": [],
-            },
-            "Overall Fit": {
-                "score": 86,
-                "strengths": [
-                    {"text": "3 years fintech — strong alignment with regulated industry context", "tag": "Evidenced", "req": "Domain fit"},
-                    {"text": "MSc Computer Science, NUS — top regional programme", "tag": "Evidenced", "req": "Academic qualification"},
-                    {"text": "Multiple professional certifications signal continuous development", "tag": "Exceeds", "req": "Credential depth"},
-                ],
-                "gaps": [
-                    {"text": "No HR-tech or recruitment domain exposure", "severity": "Minor", "req": "Sector-specific knowledge"},
-                ],
-            },
-        },
-    },
-    {
-        "name": "Ben Lim",
-        "recommendation": "Consider",
-        "summary": "Solid mid-level engineer with good breadth and strong soft skills, but undershoots on seniority and lacks ML depth. Viable as a growth hire if the team can absorb a development curve.",
-        "interview_focus": "Probe self-directed learning track record; assess ML upskilling appetite; gauge readiness for more complex system ownership.",
-        "competencies": {
-            "Technical Competencies": {
-                "score": 72,
-                "strengths": [
-                    {"text": "Proficient in React and FastAPI — useful for internal tooling", "tag": "Evidenced", "req": "Full-stack capability"},
-                    {"text": "Docker and basic CI/CD pipeline experience", "tag": "Evidenced", "req": "DevOps familiarity"},
-                ],
-                "gaps": [
-                    {"text": "No machine learning or data engineering experience", "severity": "Critical", "req": "Core ML requirement"},
-                    {"text": "No cloud certifications; AWS limited to personal side projects", "severity": "Moderate", "req": "Cloud platform requirement"},
-                ],
-            },
-            "Relevance of Exp": {
-                "score": 60,
-                "strengths": [
-                    {"text": "Shipped 4 production web applications end-to-end", "tag": "Evidenced", "req": "Delivery track record"},
-                    {"text": "Participated in full SDLC including release management", "tag": "Evidenced", "req": "Engineering process maturity"},
-                ],
-                "gaps": [
-                    {"text": "3 years professional experience vs 5-year minimum required", "severity": "Moderate", "req": "Minimum experience bar"},
-                    {"text": "No experience on systems exceeding 100k concurrent users", "severity": "Moderate", "req": "Scale requirement"},
-                ],
-            },
-            "Leadership": {
-                "score": 75,
-                "strengths": [
-                    {"text": "Scrum master for a team of 6 — shows process and facilitation ownership", "tag": "Evidenced", "req": "Team coordination"},
-                    {"text": "Mentored 2 interns; positive feedback cited in CV", "tag": "Evidenced", "req": "People development potential"},
-                ],
-                "gaps": [
-                    {"text": "Has not managed direct reports — key gap for this seniority level", "severity": "Moderate", "req": "People management requirement"},
-                ],
-            },
-            "Overall Fit": {
-                "score": 68,
-                "strengths": [
-                    {"text": "B2B SaaS background — aligns with product-led engineering mindset", "tag": "Inferred", "req": "Culture alignment"},
-                    {"text": "BEng Information Systems, NTU", "tag": "Evidenced", "req": "Academic baseline"},
-                ],
-                "gaps": [
-                    {"text": "No fintech or regulated-industry experience", "severity": "Moderate", "req": "Sector alignment"},
-                    {"text": "No professional certifications or postgraduate qualification", "severity": "Minor", "req": "Credential depth"},
-                ],
-            },
-        },
-    },
-    {
-        "name": "Carol Ng",
-        "recommendation": "Consider",
-        "summary": "Strong academic foundation but experience falls significantly short of the senior specification. Best suited for a junior or graduate-track variant. Shortlisting for this role as written is not recommended.",
-        "interview_focus": "Only interview if a junior-level opening exists. Assess learning velocity, problem-solving approach, and ability to operate independently.",
-        "competencies": {
-            "Technical Competencies": {
-                "score": 58,
-                "strengths": [
-                    {"text": "Python and SQL competent from coursework and internship", "tag": "Evidenced", "req": "Core language requirement"},
-                    {"text": "Familiar with pandas and data visualisation libraries", "tag": "Evidenced", "req": "Data tooling familiarity"},
-                ],
-                "gaps": [
-                    {"text": "No Docker, Kubernetes or CI/CD pipeline exposure", "severity": "Critical", "req": "DevOps requirement"},
-                    {"text": "Zero cloud platform experience — local dev environment only", "severity": "Critical", "req": "Cloud platform requirement"},
-                    {"text": "No production system or live deployment experience", "severity": "Critical", "req": "Production engineering"},
-                ],
-            },
-            "Relevance of Exp": {
-                "score": 40,
-                "strengths": [
-                    {"text": "6-month internship at a mid-size tech company with positive review", "tag": "Evidenced", "req": "Industry exposure"},
-                    {"text": "Academic capstone involved real dataset and stakeholder deliverable", "tag": "Inferred", "req": "Project experience"},
-                ],
-                "gaps": [
-                    {"text": "Under 1 year professional experience vs 5-year hard minimum", "severity": "Critical", "req": "Experience requirement"},
-                    {"text": "No ownership of shipped features, products or on-call responsibilities", "severity": "Critical", "req": "Ownership & delivery track record"},
-                ],
-            },
-            "Leadership": {
-                "score": 48,
-                "strengths": [
-                    {"text": "Led 4-person university project groups to completion", "tag": "Evidenced", "req": "Basic team coordination"},
-                    {"text": "Organised two faculty-level tech events end-to-end", "tag": "Evidenced", "req": "Initiative and execution"},
-                ],
-                "gaps": [
-                    {"text": "No professional leadership or people management experience", "severity": "Critical", "req": "Leadership requirement"},
-                    {"text": "No cross-functional stakeholder or executive engagement", "severity": "Moderate", "req": "Stakeholder management"},
-                ],
-            },
-            "Overall Fit": {
-                "score": 72,
-                "strengths": [
-                    {"text": "BComp (Hons) CS, NUS — Dean's List, strongest academic signal", "tag": "Exceeds", "req": "Academic qualification"},
-                    {"text": "Electives in ML, Distributed Systems, Database Systems — directly relevant", "tag": "Evidenced", "req": "Technical foundation"},
-                ],
-                "gaps": [
-                    {"text": "Very limited domain depth beyond academic context", "severity": "Moderate", "req": "Domain knowledge"},
-                    {"text": "No regulatory, compliance or data governance awareness", "severity": "Minor", "req": "Regulated industry context"},
-                ],
-            },
-        },
-    },
-    {
-        "name": "David Ong",
-        "recommendation": "Pass",
-        "summary": "Fundamental mismatch — core software engineering skills are absent, the career gap is unexplained, and the background is not transferable to this role. Not recommended for progression without significant new information.",
-        "interview_focus": "Only engage if the career gap is credibly explained and evidence of self-directed software upskilling is presented.",
-        "competencies": {
-            "Technical Competencies": {
-                "score": 25,
-                "strengths": [
-                    {"text": "Basic MATLAB scripting from hardware engineering background", "tag": "Inferred", "req": "Adjacent technical exposure"},
-                ],
-                "gaps": [
-                    {"text": "No Python, SQL or software engineering experience evidenced", "severity": "Critical", "req": "Core language requirement"},
-                    {"text": "No cloud, DevOps or containerisation exposure", "severity": "Critical", "req": "Infrastructure requirement"},
-                    {"text": "Technical profile is entirely hardware/embedded systems — non-transferable", "severity": "Critical", "req": "Domain alignment"},
-                ],
-            },
-            "Relevance of Exp": {
-                "score": 32,
-                "strengths": [
-                    {"text": "4 years professional employment — demonstrates workplace reliability", "tag": "Inferred", "req": "Professional track record"},
-                ],
-                "gaps": [
-                    {"text": "2-year career gap with no explanation — significant red flag", "severity": "Critical", "req": "Career continuity"},
-                    {"text": "Hardware engineering experience is not transferable to this role", "severity": "Critical", "req": "Relevant experience"},
-                ],
-            },
-            "Leadership": {
-                "score": 40,
-                "strengths": [
-                    {"text": "Project coordinator title — some evidence of team coordination", "tag": "Inferred", "req": "Coordination ability"},
-                ],
-                "gaps": [
-                    {"text": "No formal people management or direct report ownership", "severity": "Moderate", "req": "People management"},
-                    {"text": "No cross-functional or stakeholder leadership evidenced", "severity": "Moderate", "req": "Stakeholder management"},
-                ],
-            },
-            "Overall Fit": {
-                "score": 30,
-                "strengths": [],
-                "gaps": [
-                    {"text": "Hardware engineering background has minimal overlap with this role", "severity": "Critical", "req": "Role alignment"},
-                    {"text": "BEng Electrical Engineering — significant discipline mismatch", "severity": "Critical", "req": "Academic fit"},
-                    {"text": "No software certifications or evidence of upskilling attempts", "severity": "Moderate", "req": "Development intent"},
-                ],
-            },
-        },
-    },
-]
+# ── Claude analysis ───────────────────────────────────────────────────────────
+
+def real_analyze(client: anthropic.Anthropic, jd: str, cv_text: str,
+                 name: str, competencies: list) -> dict:
+    comp_list = "\n".join(f"- {c}" for c in competencies)
+    comp_example = competencies[0] if competencies else "Technical Competencies"
+
+    prompt = f"""You are a senior recruiter with 15+ years of hiring experience. Analyse the candidate's CV against the job description and return a structured JSON assessment.
+
+JOB DESCRIPTION:
+{jd}
+
+CANDIDATE CV:
+{cv_text}
+
+Evaluate the candidate across these competency dimensions:
+{comp_list}
+
+Rules:
+- Score each competency 0–100 (0 = no match, 100 = exceptional match)
+- Strengths: 2–4 specific points per competency, each citing actual CV evidence.
+  tag options: "Evidenced" (directly stated in CV), "Exceeds" (goes beyond the JD requirement), "Inferred" (implied or transferable)
+- Gaps: 0–3 specific shortfalls per competency, grounded in the JD requirements only.
+  severity options: "Critical" (must-have, missing), "Moderate" (important gap), "Minor" (nice-to-have)
+- Each strength/gap must include a "req" field that names the specific JD requirement it refers to.
+- Do NOT invent gaps for skills not mentioned in the JD.
+- recommendation: "Shortlist" if overall weighted fit is strong (≥75), "Consider" if partial fit (50–74), "Pass" if poor fit (<50)
+- summary: 2–3 sentence plain-English verdict.
+- interview_focus: 1–2 sentence guidance on what to probe in the interview.
+
+Respond with ONLY valid JSON — no markdown fences, no preamble:
+{{
+  "recommendation": "Shortlist",
+  "summary": "...",
+  "interview_focus": "...",
+  "competencies": {{
+    "{comp_example}": {{
+      "score": 85,
+      "strengths": [
+        {{"text": "...", "tag": "Evidenced", "req": "specific JD requirement"}}
+      ],
+      "gaps": [
+        {{"text": "...", "severity": "Moderate", "req": "specific JD requirement"}}
+      ]
+    }}
+  }}
+}}"""
+
+    msg = client.messages.create(
+        model="claude-sonnet-4-5",
+        max_tokens=2500,
+        messages=[{"role": "user", "content": prompt}],
+    )
+    raw = msg.content[0].text.strip().replace("```json", "").replace("```", "").strip()
+    parsed = json.loads(raw)
+
+    result = {
+        "name": name,
+        "recommendation": parsed.get("recommendation", "Consider"),
+        "summary": parsed.get("summary", ""),
+        "interview_focus": parsed.get("interview_focus", ""),
+        "competencies": {},
+    }
+    for comp in competencies:
+        cd = parsed.get("competencies", {}).get(comp, {})
+        result["competencies"][comp] = {
+            "score": max(0, min(100, int(cd.get("score", 50)))),
+            "strengths": [s for s in cd.get("strengths", []) if isinstance(s, dict)],
+            "gaps":      [g for g in cd.get("gaps", [])      if isinstance(g, dict)],
+        }
+    return result
+
 
 # ── Helper functions ──────────────────────────────────────────────────────────
 
@@ -285,29 +160,6 @@ def generate_rationale(comp_data: dict, weights: dict) -> str:
     if len(contribs) > 1 and bottom[1] < 65 and bottom[2] > 0:
         text += f" Held back by {bottom[0]} ({bottom[1]}pts × {bottom[2]}%)."
     return text
-
-
-def mock_analyze(name: str, competencies: list) -> dict:
-    match = next((c for c in MOCK_CANDIDATES if c["name"] == name), None)
-    base = {**(match or {})}
-    if not match:
-        s = random.randint(35, 85)
-        base = {
-            "name": name,
-            "recommendation": "Shortlist" if s >= 80 else "Consider" if s >= 55 else "Pass",
-            "summary": "Uploaded candidate — mock scores generated. Use live API for real assessment.",
-            "interview_focus": "Review CV in detail before determining interview focus areas.",
-            "competencies": {},
-        }
-    for comp in competencies:
-        if comp not in base.get("competencies", {}):
-            s = random.randint(40, 78)
-            base.setdefault("competencies", {})[comp] = {
-                "score": s,
-                "strengths": [{"text": "Relevant background noted (mock)", "tag": "Inferred", "req": ""}],
-                "gaps": [{"text": "Further detail required (mock)", "severity": "Minor", "req": ""}],
-            }
-    return base
 
 
 def color_score(val):
@@ -354,7 +206,7 @@ def results_to_csv(processed, weights):
     return buf.getvalue()
 
 
-# ── Chart builders (pure HTML/CSS — no Altair) ───────────────────────────────
+# ── Chart builders (pure HTML/CSS) ────────────────────────────────────────────
 
 def _score_bar_color(score: int) -> str:
     if score >= 80: return "#10b981"
@@ -419,7 +271,6 @@ def render_individual_bars(candidate: dict, processed: list,
         avg = avgs.get(comp, 0)
         w = weights.get(comp, 0)
         bar_color = _score_bar_color(score)
-        avg_pct = avg  # avg is already 0-100
         diff = score - avg
         diff_str = (f'<span style="color:#10b981;">▲ {diff}</span>' if diff > 0
                     else f'<span style="color:#ef4444;">▼ {abs(diff)}</span>' if diff < 0
@@ -435,10 +286,8 @@ def render_individual_bars(candidate: dict, processed: list,
             f'    </span>'
             f'  </div>'
             f'  <div style="position:relative;background:#e2e8f0;border-radius:999px;height:18px;">'
-            # group average marker
-            f'    <div style="position:absolute;left:{avg_pct}%;top:-3px;width:3px;height:24px;'
+            f'    <div style="position:absolute;left:{avg}%;top:-3px;width:3px;height:24px;'
             f'         background:#475569;border-radius:2px;z-index:2;" title="Group avg {avg}"></div>'
-            # candidate bar
             f'    <div style="width:{score}%;background:{bar_color};height:18px;'
             f'         border-radius:999px;position:relative;z-index:1;"></div>'
             f'  </div>'
@@ -464,23 +313,20 @@ if "competencies" not in st.session_state:
 if "weights" not in st.session_state:
     st.session_state.weights = {c: 25 for c in DEFAULT_COMPETENCIES}
 if "slider_gen" not in st.session_state:
-    st.session_state.slider_gen = 0   # incremented to force fresh slider widgets
+    st.session_state.slider_gen = 0
 if "cvs" not in st.session_state:
-    st.session_state.cvs = [{"name": c["name"], "chars": None} for c in MOCK_CANDIDATES]
+    st.session_state.cvs = []   # list of {"name": str, "text": str, "chars": int}
 if "jd_text" not in st.session_state:
-    st.session_state.jd_text = (
-        "Senior Software Engineer with 5+ years Python experience, "
-        "cloud infrastructure (AWS/GCP), and team leadership skills."
-    )
+    st.session_state.jd_text = ""
 if "results" not in st.session_state:
     st.session_state.results = []
 
-# Pending mutations
+# Pending mutations (must run before any widgets render)
 if st.session_state.get("_preset"):
     p = st.session_state.pop("_preset")
     st.session_state.competencies = list(DEFAULT_COMPETENCIES)
     st.session_state.weights = {c: PRESETS[p].get(c, 0) for c in DEFAULT_COMPETENCIES}
-    st.session_state.slider_gen += 1   # new key → fresh sliders pick up new values
+    st.session_state.slider_gen += 1
 if st.session_state.get("_add_comp"):
     c = st.session_state.pop("_add_comp")
     if c and c not in st.session_state.competencies:
@@ -515,7 +361,7 @@ with st.sidebar:
                            placeholder="e.g. Communication")
     if st.button("➕ Add", disabled=not (new_c or "").strip()):
         st.session_state["_add_comp"] = new_c.strip()
-        st.session_state.comp_key += 1   # rotates key → fresh empty input next run
+        st.session_state.comp_key += 1
         st.rerun()
 
     st.divider()
@@ -549,14 +395,32 @@ with st.sidebar:
 
 st.markdown(
     "<h1 style='text-align:center;margin-bottom:4px;'>✨ CV Shortlisting Tool</h1>"
-    "<p style='text-align:center;color:#64748b;margin-top:0;'>Weight competencies in the sidebar · Run analysis · Adjust to re-rank instantly</p>",
+    "<p style='text-align:center;color:#64748b;margin-top:0;'>"
+    "Weight competencies in the sidebar · Upload a JD + CVs · Run AI analysis · Adjust weights to re-rank instantly"
+    "</p>",
     unsafe_allow_html=True,
 )
-st.warning("🧪 **Mock mode** — scores and analysis are pre-scripted and do **not** update based on the JD you upload. To analyse against a real JD, add your API key and use `app.py`.")
 
-# ── Input steps (collapsed when results exist) ────────────────────────────────
+# ── API key ───────────────────────────────────────────────────────────────────
+
+api_key = st.secrets.get("ANTHROPIC_API_KEY", "") if hasattr(st, "secrets") else ""
+if not api_key:
+    api_key = os.getenv("ANTHROPIC_API_KEY", "")
+if not api_key:
+    api_key = st.text_input(
+        "🔑 Anthropic API Key",
+        type="password",
+        help="Set ANTHROPIC_API_KEY in Streamlit Cloud secrets or a local .env file to avoid entering it each run.",
+    )
+
+if not api_key:
+    st.info("Enter your Anthropic API key above to enable AI analysis.")
+    st.stop()
+
+# ── Input steps ───────────────────────────────────────────────────────────────
 
 collapsed = bool(st.session_state.results)
+
 with st.expander("📋 Step 1 — Job Description", expanded=not collapsed):
     tab_paste, tab_pdf = st.tabs(["✏️ Paste", "📄 PDF"])
     with tab_paste:
@@ -571,43 +435,35 @@ with st.expander("📋 Step 1 — Job Description", expanded=not collapsed):
                 ex = extract_pdf_text(jd_file)
                 st.session_state.jd_text = ex
                 st.success(f"✅ {len(ex):,} chars extracted from {jd_file.name}")
-                st.caption(ex[:250] + "…")
+                st.caption(ex[:300] + "…")
             except Exception as e:
                 st.error(str(e))
 
 with st.expander(f"👥 Step 2 — Candidate CVs ({len(st.session_state.cvs)} loaded)", expanded=not collapsed):
-    up_tab, name_tab = st.tabs(["📂 Upload PDFs", "✏️ Add by name"])
-    with up_tab:
-        uploads = st.file_uploader("CVs", type=["pdf"], accept_multiple_files=True,
-                                    label_visibility="collapsed", key="cv_up")
-        if uploads:
-            existing = {c["name"] for c in st.session_state.cvs}
-            added = []
-            for f in uploads:
-                nm = f.name.removesuffix(".pdf")
-                if nm in existing:
-                    continue
-                try:
-                    txt = extract_pdf_text(f)
-                    st.session_state.cvs.append({"name": nm, "chars": len(txt)})
-                    existing.add(nm)
-                    added.append(nm)
-                except Exception as e:
-                    st.error(f"{f.name}: {e}")
-            if added:
-                st.success(f"Added: {', '.join(added)}")
-    with name_tab:
-        nn = st.text_input("Name", key="new_cv_name")
-        if st.button("Add", disabled=not nn.strip()):
-            if nn.strip() not in {c["name"] for c in st.session_state.cvs}:
-                st.session_state.cvs.append({"name": nn.strip(), "chars": None})
-            st.rerun()
+    uploads = st.file_uploader("CVs", type=["pdf"], accept_multiple_files=True,
+                                label_visibility="collapsed", key="cv_up")
+    if uploads:
+        existing = {c["name"] for c in st.session_state.cvs}
+        added = []
+        for f in uploads:
+            nm = f.name.removesuffix(".pdf")
+            if nm in existing:
+                continue
+            try:
+                txt = extract_pdf_text(f)
+                st.session_state.cvs.append({"name": nm, "text": txt, "chars": len(txt)})
+                existing.add(nm)
+                added.append(nm)
+            except Exception as e:
+                st.error(f"{f.name}: {e}")
+        if added:
+            st.success(f"Added: {', '.join(added)}")
 
     if st.session_state.cvs:
         to_rm = []
         for i, cv in enumerate(st.session_state.cvs):
             c1, c2 = st.columns([7, 1])
-            c1.markdown(f"📄 **{cv['name']}**" + (f"  ·  {cv['chars']:,} chars" if cv["chars"] else ""))
+            c1.markdown(f"📄 **{cv['name']}**  ·  {cv['chars']:,} chars")
             if c2.button("✕", key=f"rm_cv_{i}"):
                 to_rm.append(i)
         for idx in reversed(to_rm):
@@ -627,18 +483,39 @@ if not run_ok and not st.session_state.results:
         st.warning(f"Weights total **{total_w}%** — must equal 100% to run. Adjust in the sidebar.")
 
 if st.button("✨ Run Shortlisting", type="primary", use_container_width=True, disabled=not run_ok):
-    raw = []
-    bar = st.progress(0)
+    client = anthropic.Anthropic(api_key=api_key)
+    raw_results = []
+    total = len(st.session_state.cvs)
+    bar = st.progress(0, text="Starting analysis…")
     for i, cv in enumerate(st.session_state.cvs):
-        bar.progress((i + 1) / len(st.session_state.cvs), text=f"Analysing {cv['name']}…")
-        raw.append(mock_analyze(cv["name"], st.session_state.competencies))
-    st.session_state.results = raw
+        bar.progress(i / total, text=f"Analysing {cv['name']} ({i+1}/{total})…")
+        try:
+            result = real_analyze(
+                client,
+                st.session_state.jd_text,
+                cv["text"],
+                cv["name"],
+                st.session_state.competencies,
+            )
+            raw_results.append(result)
+        except Exception as e:
+            raw_results.append({
+                "name": cv["name"],
+                "recommendation": "Pass",
+                "summary": f"Analysis failed: {e}",
+                "interview_focus": "",
+                "competencies": {
+                    c: {"score": 0, "strengths": [], "gaps": []} for c in st.session_state.competencies
+                },
+            })
+    bar.progress(1.0, text="Done!")
+    st.session_state.results = raw_results
     st.rerun()
 
 if not st.session_state.results:
     st.stop()
 
-# ── Live results (re-computed on every render) ────────────────────────────────
+# ── Live results (re-computed on every render when weights change) ─────────────
 
 weights = get_weights()
 processed = sorted(
@@ -649,7 +526,7 @@ processed = sorted(
     key=lambda x: x["weighted_score"], reverse=True,
 )
 
-# ── Active JD banner ─────────────────────────────────────────────────────────
+# ── Active JD banner ──────────────────────────────────────────────────────────
 
 st.markdown("---")
 jd_preview = st.session_state.jd_text.strip()
@@ -658,12 +535,8 @@ st.markdown(
     f"""<div style="background:#f8fafc;border:1px solid #e2e8f0;border-left:4px solid #6366f1;
         border-radius:0 8px 8px 0;padding:12px 16px;margin-bottom:16px;">
       <div style="font-size:0.78rem;font-weight:700;color:#6366f1;
-                  letter-spacing:0.05em;margin-bottom:4px;">📋 JOB DESCRIPTION IN USE</div>
+                  letter-spacing:0.05em;margin-bottom:4px;">📋 JOB DESCRIPTION USED FOR THIS ANALYSIS</div>
       <div style="font-size:0.83rem;color:#374151;line-height:1.6;">{jd_short}</div>
-      <div style="margin-top:8px;font-size:0.72rem;color:#f59e0b;font-weight:600;">
-        ⚠ Mock mode: candidate scores and strengths/gaps below are pre-scripted and do
-        not reflect this JD. Configure your API key in app.py for real JD-based analysis.
-      </div>
     </div>""",
     unsafe_allow_html=True,
 )
@@ -914,6 +787,6 @@ with tab_det:
 
 st.markdown(
     "<p style='text-align:center;color:#94a3b8;font-size:.75rem;margin-top:2rem;'>"
-    "Mock mode · No real data or API calls</p>",
+    "Powered by Claude · PDFs processed locally · No candidate data stored</p>",
     unsafe_allow_html=True,
 )
