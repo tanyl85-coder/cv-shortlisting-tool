@@ -98,10 +98,13 @@ st.markdown(
 
 # ── API key ───────────────────────────────────────────────────────────────────
 
-api_key = os.getenv("ANTHROPIC_API_KEY", "")
+# Check Streamlit Cloud secrets first, then local .env, then ask user
+api_key = st.secrets.get("ANTHROPIC_API_KEY", "") if hasattr(st, "secrets") else ""
+if not api_key:
+    api_key = os.getenv("ANTHROPIC_API_KEY", "")
 if not api_key:
     api_key = st.text_input("Anthropic API key", type="password",
-                            help="Set ANTHROPIC_API_KEY in a .env file to avoid entering it each time.")
+                            help="Set ANTHROPIC_API_KEY in your Streamlit Cloud secrets or a local .env file.")
 
 # ── Step 1: Job Description ───────────────────────────────────────────────────
 
