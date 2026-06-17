@@ -403,7 +403,10 @@ st.markdown(
 
 # ── API key ───────────────────────────────────────────────────────────────────
 
-api_key = st.secrets.get("ANTHROPIC_API_KEY", "") if hasattr(st, "secrets") else ""
+try:
+    api_key = st.secrets.get("ANTHROPIC_API_KEY", "")
+except Exception:
+    api_key = ""
 if not api_key:
     api_key = os.getenv("ANTHROPIC_API_KEY", "")
 if not api_key:
